@@ -52,11 +52,11 @@ function accept(
 }
 
 describe('LedgerService.accept', () => {
-  it('stores a delivery and gives the tenant its own sequence', () => {
+  it('stores a delivery and gives the tenant its own sequence', async () => {
     const service = createService();
-    const first = accept(service);
-    const second = accept(service, { key: 'delivery-2', body: '{"type":"next"}' });
-    const other = accept(service, {
+    const first = await accept(service);
+    const second = await accept(service, { key: 'delivery-2', body: '{"type":"next"}' });
+    const other = await accept(service, {
       tenantId: 'beta',
       secret: BETA.ingestSecret,
       key: 'delivery-1',
@@ -73,16 +73,16 @@ describe('LedgerService.accept', () => {
     });
   });
 
-  it('replays the original event when the same key and bytes arrive again', () => {
+  it('replays the original event when the same key and bytes arrive again', async () => {
     const service = createService();
-    const first = accept(service);
-    const second = accept(service);
+    const first = await accept(service);
+    const second = await accept(service);
     expect(first.kind).toBe('accepted');
     expect(second).toEqual({
       kind: 'replayed',
       event: first.kind === 'accepted' ? first.event : {},
     });
-    const feed = service.read({
+    const feed = await service.read({
       tenantId: 'acme',
       token: ACME.readToken,
       after: undefined,
@@ -91,16 +91,18 @@ describe('LedgerService.accept', () => {
     expect(feed.kind === 'ok' && feed.events).toHaveLength(1);
   });
 
-  it('conflicts when the same key is reused with different bytes', () => {
+  it('conflicts when the same key is reused with different bytes', async () => {
     const service = createService();
-    const first = accept(service);
-    const conflict = accept(service, { body: '{"type":"invoice.paid","extra":true}' });
+    const first = await accept(service);
+    const conflict = await accept(service, {
+      body: '{"type":"invoice.paid","extra":true}',
+    });
     expect(first.kind).toBe('accepted');
     expect(conflict).toEqual({
       kind: 'idempotency_conflict',
       eventId: first.kind === 'accepted' ? first.event.id : '',
     });
-    const feed = service.read({
+    const feed = await service.read({
       tenantId: 'acme',
       token: ACME.readToken,
       after: undefined,
@@ -109,24 +111,24 @@ describe('LedgerService.accept', () => {
     expect(feed.kind === 'ok' && feed.events).toHaveLength(1);
   });
 
-  it('stores nothing for a bad signature, an unknown tenant, or a stale timestamp', () => {
+  it('stores nothing for a bad signature, an unknown tenant, or a stale timestamp', async () => {
     const service = createService();
-    expect(accept(service, { signature: 'ab'.repeat(32) })).toEqual({
+    expect(await accept(service, { signature: 'ab'.repeat(32) })).toEqual({
       kind: 'invalid_signature',
     });
     expect(
-      accept(service, { tenantId: 'missing', secret: 'not-the-tenant-secret' }),
+      await accept(service, { tenantId: 'missing', secret: 'not-the-tenant-secret' }),
     ).toEqual({ kind: 'invalid_signature' });
     const stale = String(NOW_SECONDS - 301);
     const raw = Buffer.from('{"type":"invoice.paid"}');
     expect(
-      accept(service, {
+      await accept(service, {
         timestamp: stale,
         signature: sign(ACME.ingestSecret, stale, raw),
       }),
     ).toEqual({ kind: 'stale_timestamp' });
 
-    const feed = service.read({
+    const feed = await service.read({
       tenantId: 'acme',
       token: ACME.readToken,
       after: undefined,
@@ -137,13 +139,13 @@ describe('LedgerService.accept', () => {
 });
 
 describe('LedgerService.read', () => {
-  it('returns events after the cursor and stops at the limit', () => {
+  it('returns events after the cursor and stops at the limit', async () => {
     const service = createService();
-    accept(service, { key: 'a' });
-    accept(service, { key: 'b', body: '{"n":2}' });
-    accept(service, { key: 'c', body: '{"n":3}' });
+    await accept(service, { key: 'a' });
+    await accept(service, { key: 'b', body: '{"n":2}' });
+    await accept(service, { key: 'c', body: '{"n":3}' });
 
-    const page = service.read({
+    const page = await service.read({
       tenantId: 'acme',
       token: ACME.readToken,
       after: 1,
@@ -155,7 +157,7 @@ describe('LedgerService.read', () => {
       events: [{ sequence: 2, idempotencyKey: 'b' }],
     });
 
-    const rest = service.read({
+    const rest = await service.read({
       tenantId: 'acme',
       token: ACME.readToken,
       after: 2,
@@ -168,10 +170,10 @@ describe('LedgerService.read', () => {
     });
   });
 
-  it('does not return another tenant events', () => {
+  it('does not return another tenant events', async () => {
     const service = createService();
-    accept(service);
-    const feed = service.read({
+    await accept(service);
+    const feed = await service.read({
       tenantId: 'beta',
       token: BETA.readToken,
       after: undefined,
@@ -180,9 +182,9 @@ describe('LedgerService.read', () => {
     expect(feed).toEqual({ kind: 'ok', events: [], nextCursor: null });
   });
 
-  it('keeps the cursor when the page is empty and the caller already passed one', () => {
+  it('keeps the cursor when the page is empty and the caller already passed one', async () => {
     const service = createService();
-    const feed = service.read({
+    const feed = await service.read({
       tenantId: 'acme',
       token: ACME.readToken,
       after: 4,
@@ -191,11 +193,11 @@ describe('LedgerService.read', () => {
     expect(feed).toEqual({ kind: 'ok', events: [], nextCursor: '4' });
   });
 
-  it('rejects a bad read token and an unknown tenant with the same result', () => {
+  it('rejects a bad read token and an unknown tenant with the same result', async () => {
     const service = createService();
-    accept(service);
+    await accept(service);
     expect(
-      service.read({
+      await service.read({
         tenantId: 'acme',
         token: 'wrong-read-token1',
         after: undefined,
@@ -203,7 +205,7 @@ describe('LedgerService.read', () => {
       }),
     ).toEqual({ kind: 'unauthorized' });
     expect(
-      service.read({
+      await service.read({
         tenantId: 'missing',
         token: ACME.readToken,
         after: undefined,
@@ -212,10 +214,15 @@ describe('LedgerService.read', () => {
     ).toEqual({ kind: 'unauthorized' });
   });
 
-  it('rejects a negative cursor', () => {
+  it('rejects a negative cursor', async () => {
     const service = createService();
     expect(
-      service.read({ tenantId: 'acme', token: ACME.readToken, after: -1, limit: 50 }),
+      await service.read({
+        tenantId: 'acme',
+        token: ACME.readToken,
+        after: -1,
+        limit: 50,
+      }),
     ).toEqual({ kind: 'invalid_cursor' });
   });
 });

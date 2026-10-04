@@ -6,8 +6,17 @@ import { configureApp } from './configure-app';
 import { loadTenants } from './config';
 
 async function bootstrap(): Promise<void> {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error(
+      'DATABASE_URL is required. Start Postgres with `docker compose up -d` and copy DATABASE_URL from .env.example.',
+    );
+  }
   const app = await NestFactory.create<NestFastifyApplication>(
-    AppModule.register({ tenants: loadTenants(process.env.LEDGER_TENANTS) }),
+    AppModule.register({
+      tenants: loadTenants(process.env.LEDGER_TENANTS),
+      databaseUrl,
+    }),
     new FastifyAdapter({ bodyLimit: 256 * 1024 }),
     { rawBody: true },
   );

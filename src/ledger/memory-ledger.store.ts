@@ -1,26 +1,46 @@
-export type StoredEvent = {
-  id: string;
-  tenantId: string;
-  sequence: number;
-  idempotencyKey: string;
-  bodySha256: string;
-  receivedAt: string;
-  body: unknown;
-};
+import { Injectable } from '@nestjs/common';
+import type { LedgerStore, SaveInput, SaveResult, StoredEvent } from './ledger-store';
 
 /**
  * Per-tenant sequences start at 1 and never skip, so `sequence > after`
  * is the same slice as `events.slice(after)`.
+ *
+ * save does not await between the key check and the append, so two calls
+ * on this process cannot both insert. The Postgres store is what makes
+ * that true across connections.
  */
-export class MemoryLedgerStore {
+@Injectable()
+export class MemoryLedgerStore implements LedgerStore {
   private readonly events = new Map<string, StoredEvent[]>();
   private readonly byKey = new Map<string, StoredEvent>();
 
-  findByKey(tenantId: string, idempotencyKey: string): StoredEvent | undefined {
-    return this.byKey.get(keyOf(tenantId, idempotencyKey));
+  async save(input: SaveInput): Promise<SaveResult> {
+    const existing = this.byKey.get(keyOf(input.tenantId, input.idempotencyKey));
+    if (existing) {
+      if (existing.bodySha256 !== input.bodySha256) {
+        return { kind: 'conflict', eventId: existing.id };
+      }
+      return { kind: 'replayed', event: existing };
+    }
+
+    const stored: StoredEvent = {
+      ...input,
+      sequence: this.nextSequence(input.tenantId),
+    };
+    this.append(stored);
+    return { kind: 'inserted', event: stored };
   }
 
-  append(event: StoredEvent): void {
+  async listAfter(
+    tenantId: string,
+    after: number,
+    limit: number,
+  ): Promise<StoredEvent[]> {
+    const list = this.events.get(tenantId) ?? [];
+    return list.slice(after, after + limit);
+  }
+
+  private append(event: StoredEvent): void {
     const list = this.events.get(event.tenantId) ?? [];
     const last = list[list.length - 1];
     const expected = last === undefined ? 1 : last.sequence + 1;
@@ -34,15 +54,10 @@ export class MemoryLedgerStore {
     this.byKey.set(keyOf(event.tenantId, event.idempotencyKey), event);
   }
 
-  nextSequence(tenantId: string): number {
+  private nextSequence(tenantId: string): number {
     const list = this.events.get(tenantId);
     const last = list?.[list.length - 1];
     return last === undefined ? 1 : last.sequence + 1;
-  }
-
-  listAfter(tenantId: string, after: number, limit: number): StoredEvent[] {
-    const list = this.events.get(tenantId) ?? [];
-    return list.slice(after, after + limit);
   }
 }
 
