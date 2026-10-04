@@ -41,13 +41,13 @@ export class LedgerController {
   @ApiResponse({ status: 200, type: AcceptResponseDto })
   @ApiResponse({ status: 401, description: 'invalid_signature or stale_timestamp' })
   @ApiResponse({ status: 409, description: 'idempotency_conflict' })
-  accept(
+  async accept(
     @Param() params: TenantParamDto,
     @RequestHeaders() headers: IngestHeadersDto,
     @Body() body: IngestBodyDto,
     @Req() request: RawBodyRequest<FastifyRequest>,
     @Res({ passthrough: true }) reply: FastifyReply,
-  ): AcceptResponseDto {
+  ): Promise<AcceptResponseDto> {
     const rawBody = request.rawBody;
     if (!rawBody) {
       throw httpError(
@@ -57,7 +57,7 @@ export class LedgerController {
       );
     }
 
-    const result = this.ledger.accept({
+    const result = await this.ledger.accept({
       tenantId: params.tenantId,
       rawBody,
       body,
@@ -98,14 +98,14 @@ export class LedgerController {
   @ApiBearerAuth()
   @ApiResponse({ status: 200, type: FeedResponseDto })
   @ApiResponse({ status: 401, description: 'unauthorized' })
-  feed(
+  async feed(
     @Param() params: TenantParamDto,
     @RequestHeaders() headers: ReadHeadersDto,
     @Query() query: FeedQueryDto,
-  ): FeedResponseDto {
+  ): Promise<FeedResponseDto> {
     const token = headers.authorization.slice('Bearer '.length);
     const after = query.after === undefined ? undefined : Number(query.after);
-    const result = this.ledger.read({
+    const result = await this.ledger.read({
       tenantId: params.tenantId,
       token,
       after,

@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import type { TenantConfig } from '../config';
-import { MemoryLedgerStore, type StoredEvent } from './memory-ledger.store';
+import { LEDGER_STORE, type LedgerStore, type StoredEvent } from './ledger-store';
 import { sha256Hex, timingSafeStringEqual, verifySignature } from './signature';
 
 export type Clock = { now(): Date };
@@ -10,6 +10,7 @@ export type LedgerOptions = {
   tenants: TenantConfig[];
   clock: Clock;
   toleranceSeconds: number;
+  databaseUrl?: string;
 };
 
 export const LEDGER_OPTIONS = Symbol('LEDGER_OPTIONS');
@@ -64,12 +65,12 @@ export class LedgerService {
 
   constructor(
     @Inject(LEDGER_OPTIONS) private readonly options: LedgerOptions,
-    private readonly store: MemoryLedgerStore,
+    @Inject(LEDGER_STORE) private readonly store: LedgerStore,
   ) {
     this.tenants = new Map(options.tenants.map((tenant) => [tenant.id, tenant]));
   }
 
-  accept(input: AcceptInput): AcceptResult {
+  async accept(input: AcceptInput): Promise<AcceptResult> {
     const tenant = this.tenants.get(input.tenantId);
     const verdict = verifySignature({
       secret: tenant?.ingestSecret ?? this.unknownSecret,
@@ -86,29 +87,24 @@ export class LedgerService {
       return { kind: 'stale_timestamp' };
     }
 
-    const bodySha256 = sha256Hex(input.rawBody);
-    const existing = this.store.findByKey(input.tenantId, input.idempotencyKey);
-    if (existing) {
-      if (existing.bodySha256 !== bodySha256) {
-        return { kind: 'idempotency_conflict', eventId: existing.id };
-      }
-      return { kind: 'replayed', event: toPublic(existing) };
-    }
-
-    const stored: StoredEvent = {
+    const saved = await this.store.save({
       id: randomUUID(),
       tenantId: input.tenantId,
-      sequence: this.store.nextSequence(input.tenantId),
       idempotencyKey: input.idempotencyKey,
-      bodySha256,
+      bodySha256: sha256Hex(input.rawBody),
       receivedAt: this.options.clock.now().toISOString(),
       body: input.body,
-    };
-    this.store.append(stored);
-    return { kind: 'accepted', event: toPublic(stored) };
+    });
+    if (saved.kind === 'inserted') {
+      return { kind: 'accepted', event: toPublic(saved.event) };
+    }
+    if (saved.kind === 'replayed') {
+      return { kind: 'replayed', event: toPublic(saved.event) };
+    }
+    return { kind: 'idempotency_conflict', eventId: saved.eventId };
   }
 
-  read(input: ReadInput): ReadResult {
+  async read(input: ReadInput): Promise<ReadResult> {
     const tenant = this.tenants.get(input.tenantId);
     const expected = tenant?.readToken ?? this.unknownReadToken;
     if (!tenant || !timingSafeStringEqual(input.token, expected)) {
@@ -121,7 +117,7 @@ export class LedgerService {
       return { kind: 'invalid_cursor' };
     }
     const after = input.after ?? 0;
-    const events = this.store.listAfter(input.tenantId, after, input.limit);
+    const events = await this.store.listAfter(input.tenantId, after, input.limit);
     const last = events[events.length - 1];
     let nextCursor: string | null;
     if (last !== undefined) {

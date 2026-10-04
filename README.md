@@ -16,13 +16,14 @@ These are what the tests lock in:
 - The read API takes a separate bearer token. A wrong token and an unknown tenant both come back as `unauthorized`. One tenant's feed never includes another tenant's events.
 - The feed cursor is exclusive. `nextCursor` is the sequence to pass back as `after`.
 
-The store is in memory, in one process. Two requests cannot interleave inside `accept` because that path does not await. A second instance would need a unique constraint on `(tenant_id, idempotency_key)`. `MemoryLedgerStore` is the seam for that.
+Deliveries are rows in Postgres. `accept` writes the idempotency key and the next sequence in one transaction. A unique index on `(tenant_id, idempotency_key)` stops two concurrent requests with the same key from both inserting: the loser rolls back, including its sequence increment, then reads the row the winner stored. Sequences stay contiguous and start at 1 for each tenant. `MemoryLedgerStore` implements the same rules in process memory. The unit tests use it. The process uses Postgres when `DATABASE_URL` is set.
 
 ## Run
 
 Node 22 or newer, pnpm 10.
 
 ```bash
+docker compose up -d
 pnpm install
 cp .env.example .env
 # edit LEDGER_TENANTS, then:
@@ -30,6 +31,8 @@ set -a && source .env && set +a
 pnpm build
 pnpm start
 ```
+
+Compose publishes Postgres on host port 54329 (user `ledger`, database `webhook_ledger`) so it does not take a local 5432. The process applies `drizzle/*.sql` on startup. There is no drizzle-kit step. `DATABASE_URL` is required. The process exits if it is missing.
 
 Docs are at `http://localhost:3000/docs`. Health is `GET /health`.
 
@@ -84,14 +87,21 @@ pnpm lint
 pnpm format:check
 ```
 
-Vitest runs the signature checks, the ledger rules, and Fastify `inject` tests against the same raw-body setting production uses. CI runs those plus the TypeScript build.
+Vitest runs the signature checks, the ledger rules, and Fastify `inject` tests against the same raw-body setting production uses. Those stay on the memory store.
+
+Set `DATABASE_URL` (compose above is enough) and the Postgres suite runs too: replay, conflict, per-tenant sequences, and concurrent inserts against a real database. CI sets that variable on the test job. The quality job does not need a database. If `CI` is set and `DATABASE_URL` is missing, the Postgres file fails instead of skipping.
 
 ## Layout
 
 ```
-src/ledger/signature.ts          HMAC over the raw bytes
-src/ledger/ledger.service.ts     accept, replay, conflict, read
-src/ledger/memory-ledger.store.ts
-src/ledger/ledger.controller.ts  Fastify routes
-src/main.ts                      rawBody: true, listen
+src/ledger/signature.ts             HMAC over the raw bytes
+src/ledger/ledger.service.ts        accept, replay, conflict, read
+src/ledger/ledger-store.ts          save and listAfter
+src/ledger/memory-ledger.store.ts   unit-test double
+src/ledger/postgres-ledger.store.ts Drizzle, migrates on boot
+src/db/schema.ts                    tables
+drizzle/0000_init.sql               committed SQL
+src/ledger/ledger.controller.ts     Fastify routes
+src/main.ts                         rawBody: true, DATABASE_URL, listen
+docker-compose.yml                  Postgres 16 on port 54329
 ```
