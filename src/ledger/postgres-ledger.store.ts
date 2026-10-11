@@ -66,6 +66,12 @@ export class PostgresLedgerStore
     after: number,
     limit: number,
   ): Promise<StoredEvent[]> {
+    // sequence is a Postgres integer. A cursor above that max matches no
+    // row, and binding it as integer raises 22003 (out of range) instead
+    // of returning the empty page the memory store already returns.
+    if (after > 2147483647) {
+      return [];
+    }
     const rows = await this.db
       .select()
       .from(deliveries)

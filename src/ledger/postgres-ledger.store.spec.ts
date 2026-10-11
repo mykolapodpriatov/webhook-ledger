@@ -235,6 +235,12 @@ describe.skipIf(!databaseUrl)('PostgresLedgerStore', () => {
       await reader.onApplicationShutdown();
     }
   });
+
+  it('returns an empty page when the cursor is past the integer max', async () => {
+    await store.save(delivery());
+    await expect(store.listAfter('acme', 3000000000, 10)).resolves.toEqual([]);
+    await expect(store.listAfter('acme', 4, 10)).resolves.toEqual([]);
+  });
 });
 
 function storedEvent(
